@@ -248,3 +248,23 @@ caused by this change.
 - **Code:** revert the merge commits in this repo and nixos_config, then
   redeploy. Restart the shell to unload the fixed plugin code.
 - **Marker files:** they live in `$XDG_RUNTIME_DIR` and go at logout.
+
+## Deviations during implementation
+
+- **Step 1.** The lead restored the original comment above
+  `maybeReplaceHost()` and added the planned sentence. The implementer had
+  replaced the comment.
+- **Step 4 review fixes** (Opus; Codex found nothing):
+  - `tests/launch.test.js` also asserts that no `execDetached([hostBinary`
+    remains, and that autostart and `command()` use `hostCommand`;
+  - the README says "after updating from 1.4.2 or earlier" instead of
+    "after the first update to 1.4.3".
+- **Seen, not changed (the change didn't introduce them):**
+  - **Quit race.** `quit; sleep 2` races a host that takes longer than 2 s
+    to quit. It can leave no host running until a click, or two hosts
+    running.
+  - **Marker fallback.** When `XDG_RUNTIME_DIR` is unset, the marker falls
+    back to `/tmp`, the same pattern `statusPath` uses.
+  - Both are possible follow-ups.
+- **Checked:** razer's shell `PATH` also has
+  `/etc/profiles/per-user/olafkfreund/bin`, the same as p620.

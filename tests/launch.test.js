@@ -23,6 +23,10 @@ const swapScript = script("swapScript")
 const has = (re, msg) => assert(re.test(qml), msg)
 test("call sites pass the arguments the scripts expect", () => {
   has(/function hostCommand\(args\) \{ return \["sh", "-c", launchScript, hostBinary\]\.concat\(args\) \}/, "hostCommand")
+  // Every launch goes through hostCommand: none may start hostBinary directly.
+  assert(!/execDetached\(\[hostBinary/.test(qml), "a launch still starts hostBinary directly")
+  has(/execDetached\(hostCommand\(\["--hidden"\]\)\)/, "maybeAutostart uses hostCommand")
+  has(/execDetached\(hostCommand\(\[name\]\)\)/, "command() uses hostCommand")
   has(/\["sh", "-c", swapScript, hostBinary, wanted\]/, "maybeReplaceHost")
   has(/\["sh", "-c", installedScript, hostBinary\]/, "checkInstalled")
 })

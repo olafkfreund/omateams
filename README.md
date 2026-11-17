@@ -185,8 +185,8 @@ sudo nixos-rebuild switch --flake .#<host>
 
 - After an update that changes the version, a hidden Teams window moves to the
   new build by itself, once per version.
-- After the first update to 1.4.3, restart the shell once (or log out and in)
-  so the fixed plugin code is the one running.
+- After updating from 1.4.2 or earlier, restart the shell once (or log out
+  and in) so the fixed plugin code is the one running.
 - A rebuild that keeps the same version doesn't replace a running window, so
   restart it yourself. Any call drops:
 
