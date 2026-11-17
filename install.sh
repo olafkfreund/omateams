@@ -78,7 +78,7 @@ stamp=$(
     cd "$here" && find host assets scripts manifest.json install.sh -type f -print0 | sort -z | xargs -0 sha256sum
   } | sha256sum | cut -d' ' -f1
 )
-if (( if_needed )) && [[ -x $bindir/omateams && -f $stamp_file && $(<"$stamp_file") == "$stamp" ]]; then
+if (( if_needed )) && [[ -x $bindir/omateams && -x $bindir/omateams-unscoped && -f $stamp_file && $(<"$stamp_file") == "$stamp" ]]; then
   exit 0
 fi
 
@@ -102,7 +102,21 @@ if (( ! if_needed )) && [[ -x $bindir/omateams ]] && "$bindir/omateams" status 2
   sleep 1
 fi
 
-install -Dm755 "$build/omateams" "$bindir/omateams"
+install -Dm755 "$build/omateams" "$bindir/omateams-unscoped"
+# The window runs in a memory-capped scope, so a runaway is stopped by the
+# kernel even if the app's own guard cannot (QTBUG-142040). Same limits as
+# the Nix package.
+cat > "$build/omateams-wrapper" <<'EOF'
+#!/bin/bash
+here=$(dirname "$(readlink -f "$0")")
+if [ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus" ] && command -v systemd-run >/dev/null; then
+  exec systemd-run --user --scope --collect --quiet \
+    -p MemoryHigh=12G -p MemoryMax=16G -p MemorySwapMax=0 \
+    -- "$here/omateams-unscoped" "$@"
+fi
+exec "$here/omateams-unscoped" "$@"
+EOF
+install -Dm755 "$build/omateams-wrapper" "$bindir/omateams"
 mkdir -p "$HOME/.local/bin"
 ln -sfn "$bindir/omateams" "$HOME/.local/bin/omateams"
 

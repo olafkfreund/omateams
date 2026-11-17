@@ -48,6 +48,7 @@ function pageScript() {
     + "    if (typeof original !== 'function') return;\n"
     + "    var display = name === 'getDisplayMedia';\n"
     + "    navigator.mediaDevices[name] = function () {\n"
+    + "      if (display) console.log(marker + 'attempt');\n"
     + "      return original.apply(navigator.mediaDevices, arguments).then(function (s) { return track(display, s); });\n"
     + "    };\n"
     + "  });\n"
