@@ -33,6 +33,13 @@ reviewers:
   ensureHost()`, and `if (!installed) { ensureHost(); return }`; they must
   stay byte-identical, or the package's `--replace-fail` breaks the build.
 - **Version 1.4.3** and a README "Updating" note.
+- **Refinement of the spec's swap snippet.** If the marker can't be
+  written, the swap aborts (`|| exit 1`) instead of going ahead unguarded.
+  Without this, a write failure would let every reload swap again.
+- **Known limit, kept from the spec.** This rollout can't prove that the
+  `PATH` lookup beats a stale `hostBinary`, because after the shell restart
+  `hostBinary` is already 1.4.3. The next version update without a shell
+  restart is the proof. The unit tests prove the selection rule.
 - **Rollout, owner pre-approved ("deploy when ready"):**
   1. PR, then merge.
   2. A lock bump PR in nixos_config, then merge.
@@ -68,7 +75,7 @@ reviewers:
      readonly property string launchScript: 'b=$(command -v omateams) || b="$0"; exec "$b" "$@"'
      readonly property string installedScript: 'command -v omateams >/dev/null || test -x "$0"'
      // One swap per target version per boot, even across plugin reloads ($1 = version).
-     readonly property string swapScript: 'm="${XDG_RUNTIME_DIR:-/tmp}/omateams/swapped-$1"; [ -e "$m" ] && exit 0; mkdir -p "${m%/*}" && : > "$m"; b=$(command -v omateams) || b="$0"; "$b" quit; sleep 2; exec "$b" --hidden'
+     readonly property string swapScript: 'm="${XDG_RUNTIME_DIR:-/tmp}/omateams/swapped-$1"; [ -e "$m" ] && exit 0; { mkdir -p "${m%/*}" && : > "$m"; } || exit 1; b=$(command -v omateams) || b="$0"; "$b" quit; sleep 2; exec "$b" --hidden'
      ```
 
    - **Add a helper:**
@@ -109,34 +116,48 @@ reviewers:
      That diff must show no such line.
 
 2. **`tests/launch.test.js`: unit tests for the three scripts.**
-   - **Read the scripts from `ui/Service.qml`.** A regex extracts each
-     `readonly property string <name>: '<script>'` value.
-   - **Run them** with `child_process.spawnSync("sh", ["-c", script, fallback, ...args], { env })`.
-   - **Fixtures** live in a temp directory, using `fs.mkdtempSync`:
-     - a fake `omateams` on a temp `PATH` directory, which appends
-       `PATH:` plus its argv to a log file;
-     - a fake fallback at another path, which appends `FALLBACK:` plus its
-       argv.
+   - **Read the real values from `ui/Service.qml`.** Use a regex for each
+     `readonly property string <name>: '<literal>'` line, then **evaluate the
+     JS literal** with `Function("return " + literal)()`, so escapes are
+     applied as in QML.
+   - **Check the call-site wiring the same way.** Regexes assert that:
+     - `hostCommand` returns `["sh", "-c", launchScript, hostBinary].concat(args)`;
+     - `maybeReplaceHost` calls `["sh", "-c", swapScript, hostBinary, wanted]`;
+     - `checkInstalled` uses `["sh", "-c", installedScript, hostBinary]`.
+
+     That way `$0` and `$1` are known to be what the tests pass.
+   - **Controlled `PATH`.** Make a temp directory holding:
+     - symlinks to the utilities the scripts need, resolved with
+       `command -v` before the test: `sh`, `mkdir`, `sleep`, and `cat`;
+     - for the `PATH` case only, a fake `omateams`.
+
+     `PATH` is that directory alone, so no real omateams can be found.
+   - **Fakes.** The fake `omateams` and a fake fallback (at a path outside
+     `PATH`) each append one JSON line,
+     `{"who":"PATH"|"FALLBACK","argv":[...]}`, to a log file. That keeps
+     argument boundaries exact; write it with `printf` in a tiny `sh` script
+     using `"$@"`.
+   - **Run** with
+     `child_process.spawnSync(<sh path>, ["-c", script, fallback, ...args], { env: { PATH, XDG_RUNTIME_DIR } })`.
    - **Cases:**
      - **launch:**
-       - with the `PATH` fake, it logs `PATH: --hidden`;
-       - with `PATH` holding only the system dirs (`/run/current-system/sw/bin`
-         or `/usr/bin`) and no fake, it logs `FALLBACK: --hidden`;
-       - an argument with spaces arrives as one argument.
+       - with the `PATH` fake: `{who: PATH, argv: ["--hidden"]}`;
+       - without it: `{who: FALLBACK, argv: ["--hidden"]}`;
+       - the argument `"a b"` arrives as one argv entry.
      - **installed:**
        - exit 0 with the `PATH` fake only;
-       - exit 0 with the fallback only (it exists and is executable);
-       - non-zero with neither (the fallback path doesn't exist).
-     - **swap** (with `XDG_RUNTIME_DIR` set to a temp directory, and the
-       fake ignoring `quit`):
-       - the first call with version `9.9.9` logs `quit` and then
-         `--hidden`, and creates `swapped-9.9.9`;
-       - a second call with `9.9.9` logs nothing new;
-       - a call with `9.9.10` runs again.
-       - The fake must not sleep; the 2 s `sleep` in the script is
-         acceptable.
-   - **Style:** the same as `tests/theme.test.js` (plain `assert`, a shebang,
-     a header comment).
+       - exit 0 with the fallback only;
+       - non-zero with neither (a fallback path that doesn't exist).
+     - **swap** (with `XDG_RUNTIME_DIR` set to a temp directory):
+       - the first `9.9.9` call logs `quit` then `--hidden`, and creates
+         `omateams/swapped-9.9.9`;
+       - a second `9.9.9` call logs nothing new and exits 0;
+       - a `9.9.10` call runs again;
+       - with `XDG_RUNTIME_DIR` read-only (`chmod 0555`), it exits non-zero
+         and logs nothing.
+     - The 2 s `sleep` in the script is acceptable.
+   - **Style:** the same as `tests/theme.test.js` (plain `assert`, a
+     shebang, a header comment).
 
    Verify: `node --test tests/launch.test.js` passes.
 
@@ -180,18 +201,33 @@ reviewers:
      1. Restart the Omarchy shell once; announce it on the bus first.
      2. `omateams quit && omateams --hidden`.
      3. Check that the exe is the 1.4.3 user-profile `.omateams-wrapped`.
-   - **Runtime checks 2-4** (spec Verification) on p620:
-     1. Delete any `$XDG_RUNTIME_DIR/omateams/swapped-1.4.3`.
-     2. `omateams quit`, then start the 1.4.2 store binary hidden, and
-        confirm it is the running host.
-     3. Within about 60 s it is swapped to 1.4.3, and the marker exists.
-     4. Start 1.4.2 again, then trigger a full plugin reload: edit and
-        revert a file in a local plugin, or `omarchy-shell shell
-        rescanPlugins`. It is **not** swapped again, and keeps its pid.
-     5. Restart onto 1.4.3.
-     6. Check the bar toggle, and that `coredumpctl` shows no new entry.
-   - **On razer:** the running exe is 1.4.3, and swap check 3 above
-     passes.
+   - **Runtime checks on p620, then the same on razer**, each with the
+     session environment set:
+     1. **A swap from an older host.**
+        - Delete any `$XDG_RUNTIME_DIR/omateams/swapped-1.4.3`.
+        - Run `omateams quit`, start the 1.4.2 store binary
+          (`/nix/store/bfq4g8v6…-omateams-1.4.2/bin/omateams`) with
+          `--hidden`, and confirm with `omateams status` that it is version
+          1.4.2.
+        - Within about 60 s, the host becomes 1.4.3 (the user-profile exe),
+          and the marker exists.
+     2. **A fresh instance after a full reload.**
+        - Run `omateams quit` (on 1.4.3), delete the marker, start 1.4.2
+          hidden, and confirm it is version 1.4.2.
+        - Trigger a **full** plugin reload. Touch a file in a local plugin
+          the shell has loaded; it logs `Local plugin changed: <id>`, and
+          because the plugin is loaded, `reloadPlugins()` runs. A rescan
+          alone isn't enough.
+        - With the marker gone, a swap to 1.4.3 within about 60 s proves a
+          fresh instance (its `replaceAttempted` started false).
+     3. **The marker holds across a reload.**
+        - Run `omateams quit` (on 1.4.3), keep the marker, start 1.4.2
+          hidden, and trigger the same full reload.
+        - The 1.4.2 host is **not** swapped and keeps its pid for 2
+          minutes.
+        - Then `omateams quit && omateams --hidden` back onto 1.4.3.
+     4. **The bar.** The toggle opens the window, and `coredumpctl` shows
+        no new omateams entry.
    - Post done on the bus, and record the results in the PR.
 
 ## Tests
