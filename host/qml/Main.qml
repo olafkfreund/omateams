@@ -90,6 +90,7 @@ Window {
   // it is a process of its own). Every frame after that fails to get a sync
   // object, and discarding the page or shutting down dies with SIGTRAP. So
   // from then on a reload is a restart, and quitting skips the teardown.
+  // This is QTBUG-142040, fixed in QtWebEngine 6.140.0.
   property bool captured: false
 
   readonly property string focusCommand:
@@ -373,7 +374,11 @@ Window {
   function reportMedia(message) {
     message = String(message)
     if (message.indexOf(Media.MARKER) !== 0) return
-    var on = message.slice(Media.MARKER.length) === "on"
+    var state = message.slice(Media.MARKER.length)
+    // A share was asked for, so the EGL damage may already be done even if no
+    // track ever went live (picker cancelled, portal denied).
+    if (state === "attempt") { captured = true; statusTimer.restart(); return }
+    var on = state === "on"
     if (on === sharing) return
     sharing = on
     if (on) captured = true
@@ -442,7 +447,7 @@ Window {
       Sys.reply(connection, "ok")
       break
     case "status": Sys.reply(connection, JSON.stringify(statusObject())); break
-    case "reload": recycle(); Sys.reply(connection, "ok"); break
+    case "reload": Sys.reply(connection, "ok"); recycle(); break
     case "reload-theme": loadTheme(); refreshRounding(); Sys.reply(connection, "ok"); break
     case "quit": Sys.reply(connection, "ok"); quit(); break
     default: Sys.reply(connection, "unknown command: " + cmd)
@@ -651,7 +656,7 @@ Window {
     interval: 400
     onTriggered: { win.loadTheme(); win.refreshRounding(); Sys.watch(win.colorsPath); Sys.watch(win.omarchyState) }
   }
-  Timer { id: reloadTimer; interval: 1500; onTriggered: view.reload() }
+  Timer { id: reloadTimer; interval: 1500; onTriggered: win.captured ? win.recycle(true) : view.reload() }
   // The client clears the hash once it has routed it. A hash still there
   // means this client ignored it, so load the link as a page after all.
   Timer {
@@ -683,7 +688,7 @@ Window {
 
   Shortcut { sequences: ["Ctrl+Q"]; onActivated: win.quit() }
   Shortcut { sequences: ["Ctrl+W"]; onActivated: win.hide() }
-  Shortcut { sequences: ["Ctrl+R", "F5"]; onActivated: view.reload() }
+  Shortcut { sequences: ["Ctrl+R", "F5"]; onActivated: win.captured ? win.recycle() : view.reload() }
   Shortcut { sequences: ["Ctrl+Shift+T"]; onActivated: { win.loadTheme(); win.refreshRounding() } }
 
   Component { id: authWindow; AuthWindow {} }
