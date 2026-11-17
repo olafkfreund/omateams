@@ -79,9 +79,9 @@ Window {
   property int hostMemory: -1
   property bool sharing: false
   property real lastRescue: 0
+  readonly property real startedAt: Date.now()
   // Over the hard limit in a call: reloaded once the call is over.
   property bool overdue: false
-  property bool hostWarned: false
   // Set once this process has shared the screen. When a share ends,
   // Chromium's PipeWire capturer terminates the EGL display it shares with
   // the GPU thread, which in QtWebEngine runs in this very process (in Chrome
@@ -313,7 +313,7 @@ Window {
     if (Date.now() - lastRecycle < recycleSpacingMs) return
     if (view.recentlyAudible || view.loading) return
     view.runJavaScript("window.__omateamsInCall ? window.__omateamsInCall() : false", function(inCall) {
-      if (inCall !== true && win.concealed && !win.active) win.recycle()
+      if (inCall !== true && win.concealed && !win.active) win.recycle(true)
     })
   }
 
@@ -338,12 +338,10 @@ Window {
         overdue = true
       } else if (pageMemory > effectiveLimit) {
         memoryNotice("Teams reloaded", "It had grown to " + used + " GiB.")
-        recycle()
-      } else if (!hostWarned) {
-        // The page is not what grew, so a reload would not free anything.
-        hostWarned = true
-        memoryNotice("Teams is using " + used + " GiB",
-          "Most of it is held by the window process. Restart it with: omateams quit && omateams")
+        recycle(true)
+      } else {
+        memoryNotice("Teams restarted", "Its window process had grown to " + used + " GiB.")
+        restart(true)
       }
     })
   }
@@ -372,9 +370,9 @@ Window {
   // nearly all of that memory. Chromium refuses to discard a page that is
   // shown, so the view is taken off screen meanwhile; the window is out of
   // sight anyway, and showing it brings the page back at once.
-  function recycle() {
+  function recycle(automatic) {
     if (recycling) return
-    if (captured) { restart(); return }
+    if (captured) { restart(automatic); return }
     lastRecycle = Date.now()
     recyclePid = view.renderProcessPid
     recycling = true
@@ -399,7 +397,6 @@ Window {
     recycling = false
     clientReady = false
     overdue = false
-    hostWarned = false
     sharing = false
     view.lifecycleState = WebEngineView.LifecycleState.Active
     view.visible = true
@@ -493,7 +490,11 @@ Window {
 
   // Starts a fresh process once this one is gone, shown or hidden as the
   // window is now, then leaves; the sign-in lives in the profile on disk.
-  function restart() {
+  function restart(automatic) {
+    // An automatic restart waits until this process is a minute old, so a
+    // host that grows straight back restarts once a minute, not in a loop.
+    var wait = 60 * 1000 - (Date.now() - startedAt)
+    if (automatic && wait > 0) { deferredRestart.interval = wait; deferredRestart.restart(); return }
     lastRecycle = Date.now()
     quitting = true
     writeStatus()
@@ -613,6 +614,7 @@ Window {
   }
 
   Timer { id: statusTimer; interval: 250; onTriggered: win.writeStatus() }
+  Timer { id: deferredRestart; onTriggered: win.restart(true) }
   Timer { id: heartbeat; interval: 60000; repeat: true; running: true; onTriggered: win.writeStatus() }
   Timer { id: focusTimer; interval: 150; onTriggered: Sys.run("sh", ["-c", win.focusCommand]) }
   Timer {
