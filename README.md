@@ -96,7 +96,7 @@ Settings live on the widget's entry in `~/.config/omarchy/shell.json`
 | `useShellFont`    | `true`                          | Render Teams in the shell's monospace family |
 | `zoom`            | `100`                           | Zoom in percent |
 | `closeAction`     | `Hide window`                   | What the window's close button does; `Quit` ends the process |
-| `memoryLimit`     | `2048`                          | MB the Teams page may reach before it is reloaded in the background, raised to 1.5× a fresh page for heavy accounts (see Memory below); `0` never |
+| `memoryLimit`     | `2048`                          | MB the Teams page may reach before it is reloaded in the background, raised to 1.5× a fresh page for heavy accounts (see Memory below); `0` never reloads it (the 10 GiB ceiling still applies) |
 | `url`             | `https://teams.cloud.microsoft/` | Teams endpoint |
 
 ## CLI
@@ -168,17 +168,26 @@ under `/usr/share/omarchy/themes`.
   live, the page is started over, at most once an hour. It is discarded and
   reloaded in a fresh process, which frees the old page completely; the
   badge is back within a minute. `omateams reload` does the same on demand,
-  and `memoryLimit: 0` turns it off. `runInBackground: false` starts Teams
-  only on demand.
+  and `memoryLimit: 0` turns off the reload of the page, not the ceiling
+  below. `runInBackground: false` starts Teams only on demand.
 
   Past a hard limit, twice the reload limit and at least 8 GB counted over
   the page and the window process together, nothing waits for the window to
   go out of sight. A running screen share is ended (the call goes on), a call
   is left alone and the page is reloaded right after it, and otherwise the
-  page is reloaded at once; each comes with a notification. While the screen
-  is shared, the size is read every ten seconds instead of every five
-  minutes, since that is where Teams has been seen to grow by over 40 GB in
-  half an hour.
+  page is reloaded at once; each comes with a notification. A call is only
+  left alone below the ceiling, and a listen-only call cannot be told from an
+  idle page, so it is not spared. After any share attempt, or while a reload
+  waits for a call to end, the size is read every ten seconds instead of
+  every five minutes, since that is where Teams has been seen to grow by over
+  40 GB in half an hour.
+
+  Above all of that sits a ceiling of 10 GiB for the page and the window
+  process together. It restarts the window process, even during a call and
+  even with `memoryLimit: 0`, at most once a minute. As a last stop, the
+  `install.sh` and Nix builds start the window in a `systemd-run` scope with
+  `MemoryHigh=12G` and `MemoryMax=16G`, so the kernel stops a runaway the app
+  cannot.
 - **Screen sharing** goes through PipeWire and the desktop portal
   (`xdg-desktop-portal-hyprland`), which Omarchy ships. When a share ends,
   Chromium's PipeWire capturer terminates the EGL display it shares with the
@@ -186,7 +195,9 @@ under `/usr/share/omarchy/themes`.
   after that fails to get an EGL sync, and discarding the page or quitting
   ends in SIGTRAP. So once this process has shared the screen, a reload
   restarts the whole window process (shown or hidden as before, still signed
-  in) and quitting skips Chromium's teardown.
+  in) and quitting skips Chromium's teardown. This is QTBUG-142040. Screen
+  sharing on QtWebEngine older than 6.140.0 runs into it, and updating Qt is
+  the real fix.
 - **What theming can't reach.** Colors baked into images, avatars and a few
   hard-coded brand accents in Teams' own SVGs stay as they are.
 - Omateams is not affiliated with Microsoft. Microsoft Teams is a trademark of
