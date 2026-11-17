@@ -74,7 +74,9 @@ Window {
   // Past this the page is not left to grow until it is out of sight: what
   // the renderer and this process hold together has gone far beyond anything
   // a normal session reaches, and the machine is what runs out next.
-  readonly property int hardLimit: memoryLimit <= 0 ? 0 : Math.max(8192, 2 * effectiveLimit)
+  // Kept a GiB under the ceiling, so a share is stopped or a call waited out
+  // before the ceiling has to drop the call, however heavy the account.
+  readonly property int hardLimit: memoryLimit <= 0 ? 0 : Math.min(ceiling - 1024, Math.max(8192, 2 * effectiveLimit))
   // Host and page together, below the 12 GiB throttle even when memoryLimit is off.
   readonly property int ceiling: 10240
   readonly property int rescueSpacingMs: 2 * 60 * 1000
@@ -320,7 +322,7 @@ Window {
     if (pageBaseline < 0 && pageMemory > 0 && Date.now() - pageLoadedAt >= baselineDelayMs)
       pageBaseline = pageMemory
     if (overdue) {
-      if (total <= hardLimit) { overdue = false; return }
+      if (hardLimit <= 0 || total <= hardLimit) { overdue = false; return }
       rescue()
       return
     }
@@ -513,16 +515,16 @@ Window {
   // Starts a fresh process once this one is gone, shown or hidden as the
   // window is now, then leaves; the sign-in lives in the profile on disk.
   function restart(automatic) {
+    if (quitting) return
     // An automatic restart waits until this process is a minute old, so a
     // host that grows straight back restarts once a minute, not in a loop.
     var wait = 60 * 1000 - (Date.now() - startedAt)
     if (automatic && wait > 0) { deferredRestart.interval = wait; deferredRestart.restart(); return }
     lastRecycle = Date.now()
-    quitting = true
-    writeStatus()
     Sys.run("sh", ["-c", 'while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; exec "$0" "$2"',
       Sys.executable(), String(Sys.pid()), win.visible ? "show" : "--hidden"])
-    Sys.exitNow(0)
+    // A host that never shared shuts down normally, so the profile is flushed.
+    quit()
   }
 
   // ------------------------------------------------------------ origins

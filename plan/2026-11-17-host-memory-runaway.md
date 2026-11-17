@@ -331,3 +331,32 @@ reviewers:
 - `install.sh` users: rerun `install.sh` from the previous release. It writes
   a real binary over the wrapper, and a leftover `bin/omateams-unscoped` is
   harmless.
+
+## Deviations during implementation
+
+Changes from the step 7 reviews (Opus and Codex), each one confirmed against
+the code before it was applied:
+
+- **`hardLimit` is capped at `ceiling - 1024`.** For heavy accounts
+  (`effectiveLimit` over 5 GiB), `hardLimit` was above the ceiling, so the
+  ceiling dropped a call before the gentler path could stop a share or wait
+  out the call. That broke the constraint that no call is dropped below the
+  ceiling.
+- **`overdue` also clears when `hardLimit <= 0`.** If `memoryLimit` was set
+  to 0 during a call, `overdue` never cleared, and Teams reloaded after the
+  call against the setting.
+- **`restart()` leaves through `quit()`, and ignores calls once
+  `quitting`.**
+  - A host that never shared now shuts down normally, so the profile is
+    flushed. A captured host still `_exit`s.
+  - The guard stops a second restart while the first is shutting down.
+- **The `install.sh` wrapper also requires `systemd-run`.** Without it,
+  Teams would not start at all on a system with a user bus but no
+  `systemd-run`.
+
+Not changed, and noted in the PR:
+
+- **A deferred restart doesn't check for a call again.** This only matters
+  for a host above `hardLimit` within a minute of starting.
+- **One ceiling notice can be skipped.** This happens when a restart
+  deferred after a renderer crash sent no notice.

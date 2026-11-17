@@ -109,7 +109,7 @@ install -Dm755 "$build/omateams" "$bindir/omateams-unscoped"
 cat > "$build/omateams-wrapper" <<'EOF'
 #!/bin/bash
 here=$(dirname "$(readlink -f "$0")")
-if [ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus" ]; then
+if [ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus" ] && command -v systemd-run >/dev/null; then
   exec systemd-run --user --scope --collect --quiet \
     -p MemoryHigh=12G -p MemoryMax=16G -p MemorySwapMax=0 \
     -- "$here/omateams-unscoped" "$@"
