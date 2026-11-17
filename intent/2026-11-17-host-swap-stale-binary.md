@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: none (issues are disabled on this repo)
 author: olafkfreund
 related: intent/2026-11-17-host-memory-runaway.md, intent/2026-11-17-nix-flake.md
