@@ -42,7 +42,7 @@ let
     options.programs.nixarchy.plugins = lib.mkOption {
       type = lib.types.attrsOf (
         lib.types.submodule {
-          options.src = lib.mkOption { type = lib.types.str; };
+          options.src = lib.mkOption { type = lib.types.path; };
         }
       );
       default = { };
@@ -91,9 +91,17 @@ in
         == "${pkgs.hello}/share/omateams/plugin";
     pkgs.runCommand "hm-nixarchy-override" { } "touch $out";
 
+  # The default must be omateams itself, not just whatever the option holds.
   nixos =
-    assert builtins.elem os.config.programs.omateams.package os.config.environment.systemPackages;
+    assert
+      lib.getName os.config.programs.omateams.package == "omateams"
+      && builtins.elem os.config.programs.omateams.package os.config.environment.systemPackages;
     pkgs.runCommand "nixos" { } "touch $out";
+
+  # The overlay mixes this flake's Qt nixpkgs with the consumer's Hyprland.
+  overlay =
+    assert (import nixpkgs { inherit system; overlays = [ self.overlays.default ]; }).omateams.name == package.name;
+    pkgs.runCommand "overlay" { } "touch $out";
 
   nixos-override =
     assert builtins.elem pkgs.hello osOverride.config.environment.systemPackages;

@@ -80,10 +80,15 @@ your `nixpkgs` until it has that version.
 inputs.omateams = {
   url = "github:olafkfreund/omateams";
   inputs.nixpkgs.follows = "nixpkgs";
+  inputs.home-manager.follows = "home-manager"; # only its checks use it
 };
 ```
 
-Home-manager, with the module `omateams.homeManagerModules.default`:
+Home-manager, with the module `inputs.omateams.homeManagerModules.default`.
+The example takes `inputs` (pass it through `extraSpecialArgs`) and
+`osConfig` (there only when home-manager runs as a NixOS module), so the
+module's arguments are `{ inputs, osConfig, pkgs, ... }:`. Standalone
+home-manager can drop the `package` line:
 
 ```nix
 programs.omateams = {
@@ -99,7 +104,7 @@ With nixarchy imported, the plugin is registered for you. Without it, link the
 packaged plugin into place and enable it:
 
 ```bash
-nix profile install github:olafkfreund/omateams
+nix profile add github:olafkfreund/omateams
 ln -s ~/.nix-profile/share/omateams/plugin ~/.config/omarchy/plugins/omateams
 omarchy plugin enable omateams
 ```
@@ -107,7 +112,7 @@ omarchy plugin enable omateams
 The link goes through the profile so a garbage collection cannot remove what
 it points at (from home-manager, link `${package}/share/omateams/plugin`).
 
-NixOS, with `omateams.nixosModules.default`: `programs.omateams.enable = true;`
+NixOS, with `inputs.omateams.nixosModules.default`: `programs.omateams.enable = true;`
 installs the package built against `programs.hyprland.package`. The plugin
 wiring stays in the home-manager module.
 
