@@ -72,36 +72,103 @@ deletes the signed-in profile) and `omarchy plugin remove omateams`.
 
 ## Nix
 
-On Nix, install from this fork's flake. The build needs QtWebEngine 6.140.0
-final or newer and refuses an older one, so don't make `nixpkgs-qt` follow
-your `nixpkgs` until it has that version.
+This fork ships a flake with the package, a home-manager module, a NixOS
+module and an overlay. On NixOS, use it instead of `install.sh`: Nix builds the
+host once, the plugin never compiles anything itself, and the window runs in a
+memory-capped scope.
+
+> [!IMPORTANT]
+> The build needs QtWebEngine 6.140.0 final or newer and refuses an older one.
+> Older versions have QTBUG-142040, where ending a screen share breaks the GPU
+> thread and the window process can grow without bound. The flake brings its
+> own Qt through the `nixpkgs-qt` input, so don't make that input follow your
+> `nixpkgs` until your nixpkgs has QtWebEngine 6.140.0 final.
+
+### Add the flake input
 
 ```nix
-inputs.omateams = {
-  url = "github:olafkfreund/omateams";
-  inputs.nixpkgs.follows = "nixpkgs";
-  inputs.home-manager.follows = "home-manager"; # only its checks use it
-};
-```
-
-Home-manager, with the module `inputs.omateams.homeManagerModules.default`.
-The example takes `inputs` (pass it through `extraSpecialArgs`) and
-`osConfig` (there only when home-manager runs as a NixOS module), so the
-module's arguments are `{ inputs, osConfig, pkgs, ... }:`. Standalone
-home-manager can drop the `package` line:
-
-```nix
-programs.omateams = {
-  enable = true;
-  # On NixOS, build against the system Hyprland:
-  package = inputs.omateams.packages.${pkgs.stdenv.hostPlatform.system}.omateams.override {
-    hyprland = osConfig.programs.hyprland.package;
+# flake.nix
+inputs = {
+  nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  home-manager = {
+    url = "github:nix-community/home-manager";
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
+  omateams = {
+    url = "github:olafkfreund/omateams";
+    inputs.nixpkgs.follows = "nixpkgs";
+    inputs.home-manager.follows = "home-manager"; # only its checks use it
   };
 };
 ```
 
-With nixarchy imported, the plugin is registered for you. Without it, link the
-packaged plugin into place and enable it:
+Pass `inputs` on to your modules (`specialArgs` for NixOS,
+`home-manager.extraSpecialArgs` for home-manager), as most flake configs
+already do.
+
+### NixOS with home-manager (recommended)
+
+Use this setup on Omarchy/nixarchy. The home-manager module installs omateams
+and, when nixarchy is imported, registers the plugin. The package is built
+with the system's Hyprland, so `hyprctl` matches the running compositor:
+
+```nix
+# hosts/common/omateams.nix, imported by each host that runs Teams
+{ config, inputs, pkgs, ... }:
+let
+  omateams = inputs.omateams.packages.${pkgs.stdenv.hostPlatform.system}.omateams.override {
+    hyprland = config.programs.hyprland.package;
+  };
+in
+{
+  home-manager.users.alice = {
+    imports = [ inputs.omateams.homeManagerModules.default ];
+    programs.omateams = {
+      enable = true;
+      package = omateams;
+    };
+  };
+}
+```
+
+Rebuild, then enable the bar widget once in the shell (Setup > Plugins), or
+with `omarchy plugin enable omateams`.
+
+### NixOS without home-manager
+
+`inputs.omateams.nixosModules.default` installs the package for the whole
+system, built against `programs.hyprland.package`:
+
+```nix
+{ inputs, ... }:
+{
+  imports = [ inputs.omateams.nixosModules.default ];
+  programs.omateams.enable = true;
+  # So the plugin shows up under /run/current-system/sw/share/omateams.
+  environment.pathsToLink = [ "/share/omateams" ];
+}
+```
+
+The plugin then still needs linking for your user. Without nixarchy, link
+it once (the link follows each rebuild):
+
+```bash
+ln -s /run/current-system/sw/share/omateams/plugin ~/.config/omarchy/plugins/omateams
+omarchy plugin enable omateams
+```
+
+### Standalone home-manager or plain Nix
+
+With standalone home-manager, import the module and set
+`programs.omateams.enable = true`. There is no `osConfig`, so leave out the
+`package` line. To try it without any configuration:
+
+```bash
+nix run github:olafkfreund/omateams
+```
+
+To install into your profile and link the plugin, use the profile path, so a
+garbage collection can't remove what the link points at:
 
 ```bash
 nix profile add github:olafkfreund/omateams
@@ -109,17 +176,50 @@ ln -s ~/.nix-profile/share/omateams/plugin ~/.config/omarchy/plugins/omateams
 omarchy plugin enable omateams
 ```
 
-The link goes through the profile so a garbage collection cannot remove what
-it points at (from home-manager, link `${package}/share/omateams/plugin`).
+### Updating
 
-NixOS, with `inputs.omateams.nixosModules.default`: `programs.omateams.enable = true;`
-installs the package built against `programs.hyprland.package`. The plugin
-wiring stays in the home-manager module.
+```bash
+nix flake update omateams
+sudo nixos-rebuild switch --flake .#<host>
+```
 
-Try it with `nix run github:olafkfreund/omateams`.
+A rebuild doesn't replace a Teams window that's already running. The plugin
+restarts the hidden host only when the version changes, so after a rebuild
+that keeps the same version, restart it yourself. Any call drops:
 
-Settings stay in the shell UI; the module has no `settings` option. Only
-`x86_64-linux` is built here; `aarch64-linux` is evaluated only.
+```bash
+omateams quit && omateams --hidden
+```
+
+### Check that it works
+
+```bash
+omateams status | jq '{version, captured, overdue, hostMemory, memory}'
+readlink -f /proc/$(omateams status | jq .pid)/exe
+systemctl --user status $(omateams status | jq .pid) | head -3
+```
+
+- `version` is the one in `manifest.json`.
+- `captured` and `overdue` are present, which means the memory guard is
+  running.
+- The exe is the store path you just built.
+- The process sits in a `run-*.scope` unit. Its limits come from
+  `systemctl --user show <scope> -p MemoryHigh -p MemoryMax -p MemorySwapMax`:
+  12G, 16G and 0.
+- After sharing and stopping a share, there are no `eglCreateSync failed`
+  lines in `journalctl --user`.
+
+### What the package changes from `install.sh`
+
+- **Plugin:** it launches the store binary, and never builds or installs a
+  host itself.
+- **Memory cap:** the `omateams` command starts the window in
+  `systemd-run --user --scope` with `MemoryHigh=12G`, `MemoryMax=16G` and
+  `MemorySwapMax=0`. Without a user bus, it falls back to a plain start.
+- **Settings:** they stay in the shell UI. The modules have no `settings`
+  option, because the shell doesn't apply a plugin's manifest defaults.
+- **Systems:** `x86_64-linux` is built and checked. `aarch64-linux` is only
+  evaluated.
 
 ## Bar widget
 
