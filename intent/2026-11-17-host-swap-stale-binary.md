@@ -19,15 +19,22 @@ related: intent/2026-11-17-host-memory-runaway.md, intent/2026-11-17-nix-flake.m
   - razer: it was swapped at 19:27:53, onto `z8cbr13m…-omateams-1.4.1`.
     That is the pre-flake package from before #3037.
   - Both had to be restarted by hand onto 1.4.2.
-- **Cause.** The Nix package bakes its own store path into `Service.qml`
-  as `hostBinary`: the 1.4.2 plugin holds the 1.4.2 path. The version
-  check that triggers the swap reads the new `manifest.json`. But the swap
-  runs in a plugin instance that still holds an older `hostBinary`, so it
-  launches the old binary.
-  - Evidence: the swap came 3 s after the reload, and the binary it started
-    is in no current profile.
-  - Which instance runs it, and why, is inferred. The shell's internals
-    weren't traced.
+- **Suspected cause, not established.** The Nix package bakes its own
+  store path into `Service.qml` as `hostBinary` (`nix/package.nix:35-38`,
+  `:61-63`). The 1.4.2 plugin holds the 1.4.2 path, which was checked on
+  disk.
+  - The swap needs the shell-supplied `manifest` (`Service.qml:15-18`) to
+    report a different version than the host (`:169-174`).
+  - So some instance saw version 1.4.2 while holding an older
+    `hostBinary`. Candidates:
+    - an old instance that got the new manifest;
+    - a new instance that loaded old QML through a stale plugin link;
+    - a swap already queued before the reload. That still has to be a
+      different swap, because the host version and the manifest matched
+      before the deploy.
+  - The 3 s timing fits the command's own `sleep 2`, so it doesn't say
+    which instance it was. The spec has to pin this down before choosing a
+    fix.
 - **Why it matters.** A window left on an old build misses whatever the
   update fixed. Today that means the memory guard and QtWebEngine 6.140.0
   (QTBUG-142040). razer ran an unguarded, uncapped build for 10 days, and
@@ -36,13 +43,15 @@ related: intent/2026-11-17-host-memory-runaway.md, intent/2026-11-17-nix-flake.m
 
 ## Proposed outcome
 
-- **The new build after an update.** Once an update installs a new version,
-  a hidden Teams window ends up on that build, with no manual step, on Nix
-  and on `install.sh`.
-- **Visible windows are left alone,** as today; they pick up the new build
-  on their next start.
-- **No restart loop.** The swap happens at most once per update, and never
-  repeatedly.
+- **The new build after an update.** Once an update installs a new
+  **version**, a hidden Teams window ends up on that build, with no manual
+  step, on Nix and on `install.sh`. The check is that the running exe is the
+  installed one.
+- **Visible windows are left alone,** with today's eligibility rules; they
+  pick up the new build on their next start.
+- **No repeated disruption.** If a swap fails or lands on the same old
+  version, the window isn't restarted again and again, including across
+  plugin reloads.
 
 ## Affected users and systems
 
@@ -57,19 +66,27 @@ related: intent/2026-11-17-host-memory-runaway.md, intent/2026-11-17-nix-flake.m
 
 ## Constraints
 
-- **Visible windows:** never replace a window the user can see. Keep
-  today's `windowVisible` check.
-- **Calls:** a swap drops a running call. Don't make the swap happen in
-  more situations than today; only the binary it launches is wrong.
+- **When a swap happens:** don't widen it. Keep today's checks (hidden
+  window by the latest status, version mismatch, once per instance). This
+  task fixes which binary a swap launches, not when one happens.
+  - The window can become visible between that check and the `quit`; that
+    window of time stays as it is.
+  - A call still drops on a swap, as today.
 - **Restart loop:** a swap that lands on the same version again must not
   trigger another one.
-- **The first deploy:** the running plugin instances still have the bug, so
-  the deploy that ships the fix needs one more manual restart. After that,
-  later updates must swap correctly on their own.
+- **The first deploy:** if the cause is old plugin instances, the deploy that
+  ships the fix may need one more manual restart. After that, later updates
+  must swap correctly on their own.
 - **Small change:** the smallest change that fixes it, with no new
   dependencies.
 
 ## Open questions
 
-None. The approach (a stable launch path, a different trigger, or patching
-the package) is for the spec.
+1. **Scope.** Should a rebuild with the **same** version, which `install.sh`
+   does for source or Qt changes, also swap the window? The recommendation is
+   no: keep the scope to version changes, as the swap is designed today.
+   Same-version rebuilds keep needing a manual restart, as the README says.
+
+Which plugin instance issued the launch is for the spec to establish, with
+evidence. So is the approach: a stable launch path, a different trigger, or a
+different package substitution.
