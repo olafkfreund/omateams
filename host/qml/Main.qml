@@ -75,6 +75,8 @@ Window {
   // the renderer and this process hold together has gone far beyond anything
   // a normal session reaches, and the machine is what runs out next.
   readonly property int hardLimit: memoryLimit <= 0 ? 0 : Math.max(8192, 2 * effectiveLimit)
+  // Host and page together, below the 12 GiB throttle even when memoryLimit is off.
+  readonly property int ceiling: 10240
   readonly property int rescueSpacingMs: 2 * 60 * 1000
   property int hostMemory: -1
   property bool sharing: false
@@ -242,6 +244,8 @@ Window {
       memory: pageMemory,
       hostMemory: hostMemory,
       sharing: sharing,
+      captured: captured,
+      overdue: overdue,
       memoryBaseline: pageBaseline,
       memoryLimit: effectiveLimit,
       lastReload: lastRecycle,
@@ -300,12 +304,25 @@ Window {
   // again on top, or at memoryLimit if that is higher; anything else would
   // reload a page that cannot get any smaller.
   function checkMemory() {
-    if (recycling) return
     pageMemory = Sys.processMemory(view.renderProcessPid)
     hostMemory = Sys.processMemory(Sys.pid())
+    var total = Math.max(0, hostMemory) + Math.max(0, pageMemory)
+    statusTimer.restart()
+    if (total > ceiling) {
+      // A restart waiting out the first minute has already said so.
+      if (!deferredRestart.running)
+        memoryNotice("Teams restarted", "Its window and page had grown to " + gib(total) + " GiB.")
+      restart(true)
+      return
+    }
+    if (recycling) return
     if (pageBaseline < 0 && pageMemory > 0 && Date.now() - pageLoadedAt >= baselineDelayMs)
       pageBaseline = pageMemory
-    statusTimer.restart()
+    if (overdue) {
+      if (total <= hardLimit) { overdue = false; return }
+      rescue()
+      return
+    }
     if (hardLimit > 0 && pageMemory + hostMemory > hardLimit) { rescue(); return }
     if (effectiveLimit <= 0 || pageBaseline < 0 || pageMemory <= effectiveLimit) return
     if (!concealed || win.active || Date.now() - concealedSince < recycleIdleMs) return
@@ -658,9 +675,9 @@ Window {
     onRunningChanged: if (running) ticks = 0
     onTriggered: if (++ticks >= 30 || Sys.processMemory(win.recyclePid) < 0) win.revive()
   }
-  // Every few seconds while the screen is shared, where Teams can grow by
-  // gigabytes a minute; every five minutes otherwise.
-  Timer { id: memoryTimer; interval: win.sharing ? 10 * 1000 : 5 * 60 * 1000; repeat: true; running: true; onTriggered: win.checkMemory() }
+  // Check every ten seconds while sharing, after a share, or during an overdue call;
+  // every five minutes otherwise.
+  Timer { id: memoryTimer; interval: win.sharing || win.captured || win.overdue ? 10 * 1000 : 5 * 60 * 1000; repeat: true; running: true; onTriggered: win.checkMemory() }
   // Reads the size of the fresh page once it has settled after a reload.
   Timer { id: memoryRecheck; interval: 90 * 1000; onTriggered: win.checkMemory() }
 
