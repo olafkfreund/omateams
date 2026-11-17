@@ -65,9 +65,22 @@ reviewers:
      (around `:80`).
    - `recycle()` (`:375`) becomes `recycle(automatic)`. Its captured branch
      (`:377`) calls `restart(automatic)`.
-   - `restart()` (`:496`) becomes `restart(automatic)`. First line:
-     `if (automatic && Date.now() - startedAt < 60 * 1000) return`.
-   - `checkMemory()`'s background recycle (`:318`) calls `win.recycle(true)`.
+   - `restart()` (`:496`) becomes `restart(automatic)`. When the call is
+     automatic and the process is younger than 60 s, it does not drop the
+     restart. It defers it:
+
+     ```qml
+     var wait = 60 * 1000 - (Date.now() - startedAt)
+     if (automatic && wait > 0) { deferredRestart.interval = wait; deferredRestart.restart(); return }
+     ```
+
+     Add `Timer { id: deferredRestart; onTriggered: win.restart(true) }`
+     beside the other timers.
+   - The deferral refines the spec's "returns without acting". Otherwise a
+     renderer crash in the first minute (the one-shot `reloadTimer`) would be
+     lost and leave the page dead. The guard still holds: at most one
+     automatic restart per minute.
+   - `checkMemory()`'s background recycle (`:316`) calls `win.recycle(true)`.
      `rescue()`'s page branch (`:341`) calls `recycle(true)`.
    - `rescue()`'s last branch (`:342-347`) becomes `else { notice; restart(true) }`
      with the notice "Teams restarted / Its window process had grown to N GiB."
@@ -115,6 +128,14 @@ reviewers:
      `if (state === "attempt") { captured = true; statusTimer.restart(); return }`.
      Then `var on = state === "on"`, with the rest unchanged.
 
+   - **Subframes (approved spec contingency).** The media script runs with
+     `runOnSubframes = false` (`Main.qml:213`). If runtime check 1 shows that
+     a share attempt does not log `attempt`, Teams shares from a child frame.
+     In that case set `runOnSubframes = true` for the media script. The
+     script's `if (window.__omateamsInCall ...) return` already keeps it to
+     one install per frame. This edit is made only on that evidence, and
+     noted in the PR.
+
    Verify by printing the generated page script:
 
    ```bash
@@ -149,11 +170,28 @@ reviewers:
    discard-failure path in `recycle()`.
 
 5. **`install.sh`: scope wrapper.**
-   - Replace `install -Dm755 "$build/omateams" "$bindir/omateams"` with:
-     - `install -Dm755 "$build/omateams" "$bindir/omateams-unscoped"`;
-     - a heredoc writing `$bindir/omateams`, mode 755, with exactly the
-       wrapper in the spec's section C. It resolves `here` with
-       `readlink -f "$0"`, because `~/.local/bin/omateams` is a symlink to it.
+   - Replace `install -Dm755 "$build/omateams" "$bindir/omateams"` with the
+     following. The delimiter is quoted, so `$0`, `$@` and the runtime path
+     expand when the wrapper runs, not at install time. `readlink -f` is
+     needed because `~/.local/bin/omateams` is a symlink to the wrapper.
+
+     ```bash
+     install -Dm755 "$build/omateams" "$bindir/omateams-unscoped"
+     # The window runs in a memory-capped scope, so a runaway is stopped by the
+     # kernel even if the app's own guard cannot (QTBUG-142040). Same limits as
+     # the Nix package.
+     cat > "$build/omateams-wrapper" <<'EOF'
+     #!/bin/bash
+     here=$(dirname "$(readlink -f "$0")")
+     if [ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus" ]; then
+       exec systemd-run --user --scope --collect --quiet \
+         -p MemoryHigh=12G -p MemoryMax=16G -p MemorySwapMax=0 \
+         -- "$here/omateams-unscoped" "$@"
+     fi
+     exec "$here/omateams-unscoped" "$@"
+     EOF
+     install -Dm755 "$build/omateams-wrapper" "$bindir/omateams"
+     ```
    - The `if_needed` shortcut (`:81`) also requires
      `-x $bindir/omateams-unscoped`.
    - The stamp already hashes `install.sh`, so an existing install rebuilds
@@ -166,23 +204,42 @@ reviewers:
    shellcheck install.sh
    ```
 
-   Then, in a scratch copy:
+   Then install into a throwaway `HOME`. `install.sh` writes
+   `$HOME/.local/bin` and talks to the running instance's socket, so `HOME`,
+   the data, config and runtime directories must all be isolated:
 
    ```bash
-   XDG_DATA_HOME=<tmp> ./install.sh
+   t=$(mktemp -d)
+   mkdir -p "$t/run"
+   HOME="$t" XDG_DATA_HOME="$t/share" XDG_CONFIG_HOME="$t/config" XDG_RUNTIME_DIR="$t/run" ./install.sh
+   test -x "$t/share/omateams/bin/omateams-unscoped" && test -x "$t/share/omateams/bin/omateams"
+   HOME="$t" XDG_DATA_HOME="$t/share" XDG_CONFIG_HOME="$t/config" XDG_RUNTIME_DIR="$t/run" ./install.sh --if-needed; echo "exit=$?"
    ```
 
-   This needs Qt dev tools; if they are missing, note it and leave this check
-   to the owner.
+   - Expect the first run to install both files.
+   - Expect the `--if-needed` rerun to exit 0 with no build, because the
+     stamp is unchanged.
+   - Then `rm "$t/share/omateams/bin/omateams-unscoped"` and rerun
+     `--if-needed`. Expect a rebuild (exit 10).
+   - `$t/run` has no bus socket, so the wrapper takes the unscoped fallback:
+     `"$t/share/omateams/bin/omateams" --help` must print the usage.
+   - Check the flag name against `install.sh`'s argument parsing first.
+   - This needs `qmake6`. If it is missing, note it and leave this check to
+     the owner.
 
 6. **`README.md`: two notes.**
-   - In the Memory section (`:158-171`), explain:
+   - In the Memory section and the call/sharing paragraph after it
+     (`:158-181`), explain:
      - the ceiling restarts the window at 10 GiB of host plus page, even
        during a call and even with `memoryLimit: 0`;
      - after a screen share the window process is watched every 10 s and
        restarted rather than reloaded;
      - the `systemd-run` cap.
    - Fix the claim that `memoryLimit: 0` turns all of it off.
+   - Qualify "a call is left alone": above the ceiling it is not, and a
+     listen-only call cannot be told from an idle page.
+   - Change "fast checks while sharing" to "after any share attempt, or while
+     a reload waits for a call to end".
    - Add a line: screen sharing on QtWebEngine older than 6.140.0 hits
      QTBUG-142040, and updating Qt is the real fix.
 
@@ -208,10 +265,62 @@ reviewers:
 - Static: the commands in step 7. Expect `qmllint` clean apart from warnings
   that were already there, theme tests green, `bash -n` clean, and no
   `hostWarned` lines.
-- Runtime: the spec's Verification list, steps 1 to 8, on Wayland with
-  PipeWire. It needs a local build with low `ceiling` and `memoryLimit`
-  values that is not committed. The owner runs it, or I do with their OK,
-  since it needs a Teams sign-in and a screen share.
+- **Runtime, on Wayland with PipeWire.** These need a Teams sign-in and a
+  screen share, so the owner runs them, or I do with their OK.
+- **Setup.** Use a local build that is never committed:
+  - `ceiling: 600` and `"memoryLimit": 200` in `settings.json`, so the
+    limits are low enough to hit;
+  - a `console.log("[guard]", hostMemory, pageMemory, overdue, captured)` at
+    the top of `checkMemory()`.
+
+  Watch it with:
+
+  ```bash
+  journalctl --user -f | grep -F '[guard]'
+  omateams status | jq '{captured, overdue, hostMemory, memory}'
+  ```
+
+  1. **Attempts.**
+     - Share, then cancel the picker: `captured` becomes true and `[guard]`
+       lines come every 10 s.
+     - In a new host, share and deny it in the portal: the same.
+     - If neither shows `captured`, apply the subframe contingency in step 3.
+  2. **Ceiling.** With the host older than 60 s, the next check passes 600
+     MiB.
+     - Expect one "Teams restarted" notice, a new pid in `status`, still
+       signed in, and the same shown or hidden state.
+     - `coredumpctl list omateams-unscoped` shows no new entry.
+  3. **Ceiling during a call, a recycle, and `memoryLimit: 0`.** Each one
+     restarts.
+     - For the recycle case, trigger a background recycle by hiding the
+       window with a low `memoryLimit`, then lower the ceiling below the
+       current host.
+  4. **Loop guard.** Keep the ceiling at 600 MiB so every new host passes it
+     at once.
+     - Restarts come about 60 s apart, never faster.
+     - A user Ctrl+R in the first minute still acts at once.
+     - `kill -9` the renderer pid in the first minute on a captured host:
+       the restart is deferred and happens at 60 s.
+  5. **Overdue.** For this test set `ceiling` above the call's size and
+     `memoryLimit` low.
+     - In a mic-only call, never shared, over `hardLimit`: one notice,
+       `overdue: true`, and `[guard]` every 10 s.
+     - Hang up: a reload or restart follows within 2.5 min.
+     - Repeat, and raise `memoryLimit` in `settings.json` before hanging up
+       so the pair is under `hardLimit`: `overdue` goes false and nothing
+       reloads.
+  6. **Reload paths.**
+     - On a captured host, F5, Ctrl+R and `kill -9` of the renderer each
+       restart (new pid).
+     - On a fresh host they reload (same pid).
+     - `omateams reload` prints `ok` on both.
+     - Quit after a cancelled picker leaves no core.
+  7. **Share after recovery.** After an automatic restart, sharing works.
+  8. **Wrapper.**
+     - Step 5's throwaway install checks.
+     - On the real install, `systemctl --user status $(omateams status | jq .pid)`
+       shows a `run-*.scope` with `MemoryMax=16G`.
+     - After a restart, the new pid is in the same scope.
 - After the owner's Qt bump: share and stop 5 times. Expect no
   `eglCreateSync failed`, flat host memory, and a clean quit.
 
