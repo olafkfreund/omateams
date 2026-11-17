@@ -70,6 +70,57 @@ rebuilds unconditionally.
 Remove with `~/.config/omarchy/plugins/omateams/uninstall.sh` (`--purge` also
 deletes the signed-in profile) and `omarchy plugin remove omateams`.
 
+## Nix
+
+On Nix, install from this fork's flake. The build needs QtWebEngine 6.140.0
+final or newer and refuses an older one, so don't make `nixpkgs-qt` follow
+your `nixpkgs` until it has that version.
+
+```nix
+inputs.omateams = {
+  url = "github:olafkfreund/omateams";
+  inputs.nixpkgs.follows = "nixpkgs";
+  inputs.home-manager.follows = "home-manager"; # only its checks use it
+};
+```
+
+Home-manager, with the module `inputs.omateams.homeManagerModules.default`.
+The example takes `inputs` (pass it through `extraSpecialArgs`) and
+`osConfig` (there only when home-manager runs as a NixOS module), so the
+module's arguments are `{ inputs, osConfig, pkgs, ... }:`. Standalone
+home-manager can drop the `package` line:
+
+```nix
+programs.omateams = {
+  enable = true;
+  # On NixOS, build against the system Hyprland:
+  package = inputs.omateams.packages.${pkgs.stdenv.hostPlatform.system}.omateams.override {
+    hyprland = osConfig.programs.hyprland.package;
+  };
+};
+```
+
+With nixarchy imported, the plugin is registered for you. Without it, link the
+packaged plugin into place and enable it:
+
+```bash
+nix profile add github:olafkfreund/omateams
+ln -s ~/.nix-profile/share/omateams/plugin ~/.config/omarchy/plugins/omateams
+omarchy plugin enable omateams
+```
+
+The link goes through the profile so a garbage collection cannot remove what
+it points at (from home-manager, link `${package}/share/omateams/plugin`).
+
+NixOS, with `inputs.omateams.nixosModules.default`: `programs.omateams.enable = true;`
+installs the package built against `programs.hyprland.package`. The plugin
+wiring stays in the home-manager module.
+
+Try it with `nix run github:olafkfreund/omateams`.
+
+Settings stay in the shell UI; the module has no `settings` option. Only
+`x86_64-linux` is built here; `aarch64-linux` is evaluated only.
+
 ## Bar widget
 
 | Click  | Action                         |
