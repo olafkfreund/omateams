@@ -24,6 +24,14 @@ Item {
   readonly property string configDir: (Quickshell.env("XDG_CONFIG_HOME") || (home + "/.config")) + "/omateams"
   readonly property string settingsPath: configDir + "/settings.json"
   readonly property string hostBinary: (Quickshell.env("XDG_DATA_HOME") || (home + "/.local/share")) + "/omateams/bin/omateams"
+  // The plugin's code can outlive several updates in a running shell, so the
+  // store path baked into hostBinary may be an old build. These run the
+  // omateams on PATH (what the last update installed) and fall back to
+  // hostBinary, passed as $0.
+  readonly property string launchScript: 'b=$(command -v omateams) || b="$0"; exec "$b" "$@"'
+  readonly property string installedScript: 'command -v omateams >/dev/null || test -x "$0"'
+  // One swap per target version per boot, even across plugin reloads ($1 = version).
+  readonly property string swapScript: 'm="${XDG_RUNTIME_DIR:-/tmp}/omateams/swapped-$1"; [ -e "$m" ] && exit 0; { mkdir -p "${m%/*}" && : > "$m"; } || exit 1; b=$(command -v omateams) || b="$0"; "$b" quit; sleep 2; exec "$b" --hidden'
   // install.sh sits next to ui/ in the plugin folder `omarchy plugin add` cloned.
   readonly property string installScript: decodeURIComponent(String(Qt.resolvedUrl("../install.sh")).replace(/^file:\/\//, ""))
 
@@ -90,10 +98,11 @@ Item {
     if (autostartAttempted || !settingsReceived || !installed || running) return
     if (settings.runInBackground === false) return
     autostartAttempted = true
-    Quickshell.execDetached([hostBinary, "--hidden"])
+    Quickshell.execDetached(hostCommand(["--hidden"]))
   }
 
   // ------------------------------------------------------------ commands
+  function hostCommand(args) { return ["sh", "-c", launchScript, hostBinary].concat(args) }
   function toggle() { command("toggle") }
   function show() { command("show") }
   function hide() { command("hide") }
@@ -104,7 +113,7 @@ Item {
     if (buildState === "needs-deps") { openPackageInstaller(); return }
     if (buildState === "failed") { installInTerminal(); return }
     if (!installed) { ensureHost(); return }
-    Quickshell.execDetached([hostBinary, name])
+    Quickshell.execDetached(hostCommand([name]))
   }
 
   // ------------------------------------------------------------ host build
@@ -165,13 +174,14 @@ Item {
   // An update rebuilds the host, but a window that runs hidden from login is
   // never restarted and would keep the old build for good. While it is out
   // of sight, the old instance is swapped for the new one; a visible window
-  // is left alone and picks the new build up on its next start.
+  // is left alone and picks the new build up on its next start. The swap
+  // runs the omateams on PATH, and a marker stops it repeating after a reload.
   function maybeReplaceHost() {
     var wanted = manifest && manifest.version ? String(manifest.version) : ""
     if (replaceAttempted || !running || windowVisible || !installed || buildState !== "") return
     if (wanted.length === 0 || hostVersion.length === 0 || hostVersion === "dev" || hostVersion === wanted) return
     replaceAttempted = true
-    Quickshell.execDetached(["sh", "-c", '"$1" quit; sleep 2; exec "$1" --hidden', "omateams", hostBinary])
+    Quickshell.execDetached(["sh", "-c", swapScript, hostBinary, wanted])
   }
 
   function markStopped() {
@@ -183,7 +193,7 @@ Item {
 
   function checkInstalled() {
     if (installCheck.running) return
-    installCheck.command = ["test", "-x", hostBinary]
+    installCheck.command = ["sh", "-c", installedScript, hostBinary]
     installCheck.running = true
   }
 

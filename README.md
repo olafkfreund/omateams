@@ -183,9 +183,12 @@ nix flake update omateams
 sudo nixos-rebuild switch --flake .#<host>
 ```
 
-A rebuild doesn't replace a Teams window that's already running. The plugin
-restarts the hidden host only when the version changes, so after a rebuild
-that keeps the same version, restart it yourself. Any call drops:
+- After an update that changes the version, a hidden Teams window moves to the
+  new build by itself, once per version.
+- After updating from 1.4.2 or earlier, restart the shell once (or log out
+  and in) so the fixed plugin code is the one running.
+- A rebuild that keeps the same version doesn't replace a running window, so
+  restart it yourself. Any call drops:
 
 ```bash
 omateams quit && omateams --hidden
