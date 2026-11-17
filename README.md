@@ -171,7 +171,7 @@ under `/usr/share/omarchy/themes`.
   and `memoryLimit: 0` turns off the reload of the page, not the ceiling
   below. `runInBackground: false` starts Teams only on demand.
 
-  Past a hard limit, twice the reload limit and at least 8 GB counted over
+  Past a hard limit, twice the reload limit, between 8 and 9 GB counted over
   the page and the window process together, nothing waits for the window to
   go out of sight. A running screen share is ended (the call goes on), a call
   is left alone and the page is reloaded right after it, and otherwise the
